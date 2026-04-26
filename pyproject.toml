@@ -1,6 +1,6 @@
 [project]
 name = "rowan-autosearch"
-version = "0.1.0"
+version = "0.1.1"
 description = "Built by K-Dense for agent-driven property optimization over chemical space using Rowan + RDKit"
 authors = [
     { name = "K-Dense" },
