@@ -1,7 +1,11 @@
 [project]
 name = "rowan-autosearch"
 version = "0.1.0"
-description = "Agent-driven property optimization over chemical space using Rowan + RDKit"
+description = "Built by K-Dense for agent-driven property optimization over chemical space using Rowan + RDKit"
+authors = [
+    { name = "K-Dense" },
+    { name = "Rowan" },
+]
 requires-python = ">=3.12"
 dependencies = [
     "rowan-python>=3.0.7",
