@@ -582,3 +582,15 @@ The top-level README is a feature overview. For the full handbook, see
   Rowan submitter you're targeting.
 - Local constraints are RDKit descriptors only. Rowan-output constraints
   (e.g. "pKa must be 4–6") are expressible as composite objective terms.
+
+---
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=K-Dense-AI%2Frowan-autosearch">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=K-Dense-AI/rowan-autosearch&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=K-Dense-AI/rowan-autosearch&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=K-Dense-AI/rowan-autosearch&type=date&legend=top-left" />
+ </picture>
+</a>
