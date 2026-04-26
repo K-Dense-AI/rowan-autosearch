@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - pyproject.toml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect project version change
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          read_version() {
+            python - "$1" <<'PY'
+          import pathlib
+          import sys
+          import tomllib
+
+          path = pathlib.Path(sys.argv[1])
+          with path.open("rb") as handle:
+              data = tomllib.load(handle)
+
+          print(data["project"]["version"])
+          PY
+          }
+
+          current_version="$(read_version pyproject.toml)"
+          previous_version=""
+
+          if git rev-parse HEAD^ >/dev/null 2>&1 && git show HEAD^:pyproject.toml >/tmp/pyproject.previous.toml 2>/dev/null; then
+            previous_version="$(read_version /tmp/pyproject.previous.toml)"
+          fi
+
+          if [[ "$current_version" != "$previous_version" ]]; then
+            changed=true
+          else
+            changed=false
+          fi
+
+          {
+            echo "current=${current_version}"
+            echo "previous=${previous_version}"
+            echo "changed=${changed}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create release from version
+        if: steps.version.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.current }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="v${VERSION}"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; nothing to do."
+            exit 0
+          fi
+
+          git tag "$tag"
+          git push origin "$tag"
+
+          gh release create "$tag" \
+            --title "$tag" \
+            --generate-notes \
+            --latest
+
+      - name: No version change
+        if: steps.version.outputs.changed != 'true'
+        run: echo "pyproject.toml changed, but project.version did not."
