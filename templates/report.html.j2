@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  {% if live_refresh_seconds %}
+  <meta http-equiv="refresh" content="{{ live_refresh_seconds }}">
+  {% endif %}
+  <title>{{ cfg.run_id }} — Rowan autosearch report</title>
+  <script src="https://3Dmol.org/build/3Dmol-min.js"></script>
+  <style>
+    :root {
+      --bg: #fafafa;
+      --card: #ffffff;
+      --ink: #0f172a;
+      --muted: #64748b;
+      --accent: #2563eb;
+      --accent-soft: #dbeafe;
+      --best: #dc2626;
+      --warn: #f59e0b;
+      --ok: #16a34a;
+      --border: #e2e8f0;
+      --rowan: #3157ff;
+      --kdense: #111827;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.5;
+    }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 32px 24px; }
+    h1 { font-size: 28px; margin: 0 0 4px; font-weight: 700; }
+    h2 { font-size: 18px; margin: 32px 0 12px; font-weight: 600; }
+    .sub { color: var(--muted); font-size: 14px; }
+    .brand-bar {
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      margin-bottom: 28px; padding-bottom: 18px; border-bottom: 1px solid var(--border);
+    }
+    .brand-lockup { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .brand-mark {
+      display: inline-flex; align-items: center; justify-content: center; height: 42px;
+      border-radius: 999px; padding: 0 14px; background: var(--card); border: 1px solid var(--border);
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+      text-decoration: none; color: inherit;
+      transition: box-shadow 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
+    }
+    a.brand-mark:hover, a.brand-mark:focus-visible {
+      box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+      border-color: var(--accent);
+      transform: translateY(-1px);
+    }
+    a.brand-mark:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .brand-logo { display: block; max-height: 24px; max-width: 150px; width: auto; }
+    .brand-kdense .brand-logo { max-height: 26px; }
+    .brand-plus { color: var(--muted); font-weight: 600; }
+    .brand-tagline {
+      color: var(--muted); font-size: 12px; text-transform: uppercase;
+      letter-spacing: 0.08em; white-space: nowrap;
+    }
+    .pill {
+      display: inline-block; padding: 2px 10px; border-radius: 999px;
+      background: var(--accent-soft); color: var(--accent); font-size: 12px;
+      font-weight: 600; margin-right: 6px;
+    }
+    .grid { display: grid; gap: 16px; }
+    .stats { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin: 20px 0; }
+    .stat {
+      background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+      padding: 16px 18px;
+    }
+    .stat .label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+    .stat .value { font-size: 24px; font-weight: 700; margin-top: 4px; }
+    .card {
+      background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+      padding: 20px; margin-bottom: 20px;
+    }
+    .best-row { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: center; }
+    @media (max-width: 800px) { .best-row { grid-template-columns: 1fr; } }
+    #viewer3d {
+      width: 100%; height: 360px; background: #0b1220; border-radius: 10px;
+      position: relative; overflow: hidden;
+    }
+    .smiles-mono { font-family: "JetBrains Mono", Menlo, monospace; font-size: 13px;
+      background: #f1f5f9; padding: 6px 10px; border-radius: 6px; word-break: break-all; }
+    .plots { grid-template-columns: 1fr 1fr; }
+    @media (max-width: 800px) { .plots { grid-template-columns: 1fr; } }
+    .plot-card img { width: 100%; height: auto; border-radius: 8px; display: block; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase;
+         letter-spacing: 0.04em; }
+    tr:last-child td { border-bottom: none; }
+    .row-best td { background: #fef2f2; }
+    .row-fail td { color: var(--muted); }
+    .badge { display: inline-block; padding: 1px 8px; border-radius: 4px;
+             font-size: 11px; font-weight: 600; }
+    .badge.ok { background: #dcfce7; color: var(--ok); }
+    .badge.bad { background: #fee2e2; color: var(--best); }
+    .badge.warn { background: #fef3c7; color: var(--warn); }
+    details { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+              padding: 0; margin-bottom: 12px; }
+    details > summary {
+      cursor: pointer; padding: 14px 18px; font-weight: 600;
+      list-style: none; display: flex; justify-content: space-between; align-items: center;
+    }
+    details > summary::-webkit-details-marker { display: none; }
+    details[open] > summary { border-bottom: 1px solid var(--border); }
+    details .body { padding: 14px 18px; }
+    .rationale { font-style: italic; color: var(--muted); margin-bottom: 12px;
+                  border-left: 3px solid var(--accent); padding-left: 12px; }
+    .footer { text-align: center; color: var(--muted); font-size: 12px;
+              margin-top: 48px; padding: 16px 0; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="brand-bar" aria-label="Report branding">
+    <div class="brand-lockup">
+      <a class="brand-mark brand-rowan" href="https://www.rowansci.com/"
+         target="_blank" rel="noopener noreferrer" aria-label="Rowan Scientific (opens in new tab)">
+        <img class="brand-logo" src="brand/rowan-logo.svg" alt="Rowan">
+      </a>
+      <span class="brand-plus">+</span>
+      <a class="brand-mark brand-kdense" href="https://www.k-dense.ai"
+         target="_blank" rel="noopener noreferrer" aria-label="K-Dense (opens in new tab)">
+        <img class="brand-logo" src="brand/kdense-logo.png" alt="K-Dense">
+      </a>
+    </div>
+    <div class="brand-tagline">Autonomous molecular optimization</div>
+  </div>
+
+  <header>
+    <div>
+      <span class="pill">{{ cfg.workflow_type }}</span>
+      <span class="pill" style="background:#fef3c7; color:#92400e;">
+        {{ cfg.objective_direction }} {{ cfg.primary_metric }}
+      </span>
+    </div>
+    <h1 style="margin-top:8px;">{{ cfg.run_id }}</h1>
+    <div class="sub">{{ cfg.objective }}</div>
+    {% if live_refresh_seconds %}
+    <div class="sub">Auto-refreshes every {{ live_refresh_seconds }}s after each regenerated iteration report.</div>
+    {% endif %}
+  </header>
+
+  <div class="grid stats">
+    <div class="stat"><div class="label">iterations</div>
+      <div class="value">{{ n_iter }} / {{ cfg.max_iterations }}</div></div>
+    <div class="stat"><div class="label">candidates scored</div>
+      <div class="value">{{ n_candidates }}</div></div>
+    <div class="stat"><div class="label">passing constraints</div>
+      <div class="value">{{ n_valid }}</div></div>
+    <div class="stat"><div class="label">best {{ cfg.primary_metric }}</div>
+      <div class="value" style="color:var(--best);">
+        {% if best %}{{ "%.3f"|format(best.score) }}{% else %}—{% endif %}
+      </div></div>
+  </div>
+
+  {% if best %}
+  <div class="card">
+    <h2 style="margin-top:0;">Best candidate <span class="badge ok">iter {{ best.iter }}</span></h2>
+    <div class="best-row">
+      <div>
+        <div class="smiles-mono">{{ best.smiles }}</div>
+        <table style="margin-top:14px;">
+          <tr><th>{{ cfg.primary_metric }}</th><td><b>{{ "%.3f"|format(best.score) }}</b></td></tr>
+          {% for k, v in best.metrics.items() if k != cfg.primary_metric %}
+          <tr><th>{{ k }}</th><td>{{ "%.3f"|format(v) if v is number else v }}</td></tr>
+          {% endfor %}
+          <tr><th>design note</th><td>{{ best.design_note or '—' }}</td></tr>
+          {% if best.parent_smiles %}
+          <tr><th>parent</th><td><span class="smiles-mono">{{ best.parent_smiles }}</span></td></tr>
+          {% endif %}
+        </table>
+      </div>
+      <div>
+        <div id="viewer3d"></div>
+        <div class="sub" style="text-align:center; margin-top:8px;">
+          MMFF-minimized 3D conformer (drag to rotate)
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <h2>Plots</h2>
+  <div class="grid plots">
+    <div class="card plot-card"><img src="plots/progress.png" alt="progress"></div>
+    <div class="card plot-card"><img src="plots/pareto.png" alt="pareto"></div>
+    <div class="card plot-card" style="grid-column: 1 / -1;">
+      <img src="plots/grid.png" alt="top molecules">
+    </div>
+    <div class="card plot-card" style="grid-column: 1 / -1;">
+      <img src="plots/genealogy.png" alt="genealogy">
+    </div>
+  </div>
+
+  <h2>Iteration log</h2>
+  {% for it in iterations | reverse %}
+  <details {% if loop.first %}open{% endif %}>
+    <summary>
+      <span>Iteration {{ it.iter }}
+        {% if it.iteration_best %}
+          <span class="sub" style="font-weight:400;">
+            · best this iter: {{ "%.3f"|format(it.iteration_best.score) }}
+          </span>
+        {% endif %}
+      </span>
+      <span class="badge {% if it.decision == 'converged' %}ok{% elif it.decision == 'stuck' %}warn{% endif %}">
+        {{ it.decision }}
+      </span>
+    </summary>
+    <div class="body">
+      <div class="rationale">{{ it.rationale }}</div>
+      {% if it.decision_rationale %}
+      <div class="sub" style="margin-bottom:12px;"><b>Decision rationale:</b> {{ it.decision_rationale }}</div>
+      {% endif %}
+      {% if it.candidates %}
+      <table>
+        <thead><tr>
+          <th>SMILES</th>
+          <th>{{ cfg.primary_metric }}</th>
+          <th>MW</th>
+          <th>logP</th>
+          <th>note</th>
+          <th>status</th>
+        </tr></thead>
+        <tbody>
+        {% for c in it.candidates %}
+        {% set is_best = best and best.smiles == c.smiles and best.iter == it.iter %}
+        <tr class="{% if is_best %}row-best{% elif c.score is none %}row-fail{% endif %}">
+          <td><span class="smiles-mono">{{ c.smiles }}</span></td>
+          <td>{% if c.score is not none %}<b>{{ "%.3f"|format(c.score) }}</b>{% else %}—{% endif %}</td>
+          <td>{{ "%.1f"|format(c.metrics.mw) if c.metrics.mw is defined else '—' }}</td>
+          <td>{{ "%.2f"|format(c.metrics.logp_crippen) if c.metrics.logp_crippen is defined else '—' }}</td>
+          <td>{{ c.design_note or '' }}</td>
+          <td>
+            {% if c.error %}
+              <span class="badge bad">error</span>
+            {% elif not c.satisfies_constraints %}
+              <span class="badge warn">violates</span>
+            {% else %}
+              <span class="badge ok">ok</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% if c.error %}
+        <tr><td colspan="6" class="sub" style="font-size:12px; color:var(--best);">
+          {{ c.error }}
+        </td></tr>
+        {% endif %}
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="sub">No candidates were scored in this record.</div>
+      {% endif %}
+    </div>
+  </details>
+  {% endfor %}
+
+  <div class="footer">
+    Generated by rowan-autosearch with Rowan and K-Dense · {{ cfg.created_at }}
+  </div>
+</div>
+
+{% if best_sdf %}
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    const sdf = {{ best_sdf | tojson }};
+    const viewer = $3Dmol.createViewer("viewer3d", { backgroundColor: "#0b1220" });
+    viewer.addModel(sdf, "sdf");
+    viewer.setStyle({}, { stick: { radius: 0.18, colorscheme: "Jmol" },
+                          sphere: { scale: 0.22 } });
+    viewer.zoomTo();
+    viewer.spin(true, 0.5);
+    viewer.render();
+  });
+</script>
+{% endif %}
+
+</body>
+</html>

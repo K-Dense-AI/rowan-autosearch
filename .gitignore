@@ -1,0 +1,45 @@
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build and packaging output
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Test, lint, and coverage caches
+.coverage
+.coverage.*
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+htmlcov/
+coverage.xml
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+
+# Rowan generated run artifacts
+runs/
+
+# OS and editor files
+.DS_Store
+.AppleDouble
+.LSOverride
+.idea/
+.vscode/
