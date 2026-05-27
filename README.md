@@ -1,5 +1,9 @@
 # Rowan Autosearch
 
+[![X](https://img.shields.io/badge/Follow_on_X-%40k__dense__ai-000000?logo=x)](https://x.com/k_dense_ai)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-K--Dense_Inc.-0A66C2?logo=linkedin)](https://www.linkedin.com/company/k-dense-inc)
+[![YouTube](https://img.shields.io/badge/YouTube-K--Dense_Inc.-FF0000?logo=youtube)](https://www.youtube.com/@K-Dense-Inc)
+
 **Agent-driven molecular property optimization.** You define a chemistry
 objective and a starting molecule. An AI coding agent (Claude Code, Cursor,
 Codex, OpenCode, Gemini, etc.) plays the role of a medicinal chemist:
@@ -18,6 +22,8 @@ Joint work between [K-Dense](https://www.k-dense.ai) and
 > Recommended driver models: **Claude Opus 4.7**, **GPT 5.5**, or
 > **Gemini 3.1 Pro**. Any agent that can read `AGENTS.md` and call CLI tools
 > will work.
+
+> **Stay up to date:** Follow K-Dense on [X](https://x.com/k_dense_ai), [LinkedIn](https://www.linkedin.com/company/k-dense-inc), and [YouTube](https://www.youtube.com/@K-Dense-Inc) for release announcements, molecular optimization walkthroughs, and new Rowan workflow examples you can run with your own AI agent.
 
 ---
 
