@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import sys
 import types
 
@@ -51,6 +50,33 @@ def test_extract_metric_prefers_pinned_path_then_defaults_and_top_level():
     )
     assert score.extract_metric("unknown", "logS", None, payload) == (-0.3, "logS")
     assert score.extract_metric("unknown", "missing", None, payload) == (None, None)
+
+
+def test_extract_metric_ignores_pinned_path_that_resolves_to_non_number():
+    payload = {"solubility": {"logS": "not-a-number"}, "logS": -0.7}
+
+    # Pinned path resolves to a string, so it falls through to the top-level key.
+    assert score.extract_metric("solubility", "logS", "solubility.logS", payload) == (-0.7, "logS")
+
+
+def test_term_value_resolves_local_then_path_then_name_fallbacks():
+    # source=local reads from the locally computed descriptor metrics.
+    assert score._term_value({"source": "local", "metric": "mw"}, {"mw": 12.0}, {}) == (12.0, "mw")
+    # An explicit path walks into Rowan object_data.
+    assert score._term_value({"path": "a.b"}, {}, {"a": {"b": 3.0}}) == (3.0, "a.b")
+    # With only a name, object_data wins over local metrics.
+    assert score._term_value({"name": "x"}, {"x": 7.0}, {"x": 2.0}) == (2.0, "x")
+    assert score._term_value({"name": "x"}, {"x": 7.0}, {}) == (7.0, "x")
+    # Nothing resolvable -> (None, key).
+    assert score._term_value({"name": "x"}, {}, {}) == (None, "x")
+
+
+def test_workflow_params_accepts_either_config_key():
+    assert score._workflow_params({"workflow_params": {"method": "fast"}}) == {"method": "fast"}
+    assert score._workflow_params({"rowan_workflow_kwargs": {"solvents": ["water"]}}) == {
+        "solvents": ["water"]
+    }
+    assert score._workflow_params({}) == {}
 
 
 def test_evaluate_optimization_objective_combines_rowan_local_and_target_terms():
@@ -110,6 +136,26 @@ def test_check_constraints_ignores_unknown_rules_and_reports_failures():
 
     assert ok is False
     assert failed == ["mw_max: mw=301.00 > 300"]
+
+
+def test_check_constraints_enforces_min_bounds_and_passes_when_satisfied():
+    failing_ok, failing = score.check_constraints({"mw": 80.0, "heavy_atoms": 3}, {"mw_min": 100, "ha_min": 5})
+    assert failing_ok is False
+    assert failing == ["mw_min: mw=80.00 < 100", "ha_min: heavy_atoms=3.00 < 5"]
+
+    passing_ok, passing = score.check_constraints(
+        {"mw": 150.0, "tpsa": 20.0, "hbd": 1}, {"mw_max": 200, "mw_min": 100, "tpsa_max": 40}
+    )
+    assert passing_ok is True
+    assert passing == []
+
+
+def test_check_constraints_skips_rules_with_missing_descriptors():
+    # logp_crippen absent from the descriptor dict -> the rule is skipped, not failed.
+    ok, failed = score.check_constraints({"mw": 120.0}, {"logp_max": 3})
+
+    assert ok is True
+    assert failed == []
 
 
 def test_local_descriptors_returns_empty_dict_for_invalid_smiles():
@@ -188,6 +234,96 @@ def test_score_candidate_preserves_submit_errors(monkeypatch):
     assert result["score"] is None
     assert "Rowan submit failed: network unavailable" in result["error"]
     assert "traceback" in result
+
+
+def test_submit_one_applies_solubility_defaults_and_signature_dispatch(monkeypatch):
+    captured = {}
+
+    class FakeWorkflow:
+        uuid = "sol-1"
+
+        def result(self, wait, poll_interval):
+            assert wait is True and poll_interval == 5
+            return types.SimpleNamespace(data={"solubility": {"logS": -1.0}})
+
+    def submit_solubility_workflow(initial_smiles=None, name=None, method=None,
+                                   solvents=None, temperatures=None):
+        captured.update(
+            initial_smiles=initial_smiles, name=name, method=method,
+            solvents=solvents, temperatures=temperatures,
+        )
+        return FakeWorkflow()
+
+    monkeypatch.setitem(
+        sys.modules, "rowan",
+        types.SimpleNamespace(submit_solubility_workflow=submit_solubility_workflow),
+    )
+
+    result = score.submit_one(
+        "CCO",
+        base_config(workflow_params={"method": "fastsolv"}),
+        "job-name",
+    )
+
+    assert result == {
+        "uuid": "sol-1",
+        "object_data": {"solubility": {"logS": -1.0}},
+        "workflow_type": "solubility",
+    }
+    # User-supplied params override the kingfisher defaults; the rest stay.
+    assert captured["initial_smiles"] == "CCO"
+    assert captured["name"] == "job-name"
+    assert captured["method"] == "fastsolv"
+    assert captured["solvents"] == ["water"]
+    assert captured["temperatures"] == [298.15]
+
+
+def test_submit_one_dispatches_to_named_workflow_for_non_solubility(monkeypatch):
+    captured = {}
+
+    class FakeWorkflow:
+        uuid = "pka-1"
+
+        def result(self, wait, poll_interval):
+            return types.SimpleNamespace(data={"pka": 4.2})
+
+    def submit_pka_workflow(initial_smiles=None, name=None):
+        captured.update(initial_smiles=initial_smiles, name=name)
+        return FakeWorkflow()
+
+    monkeypatch.setitem(
+        sys.modules, "rowan",
+        types.SimpleNamespace(submit_pka_workflow=submit_pka_workflow),
+    )
+
+    result = score.submit_one("CCO", base_config(workflow_type="pka", primary_metric="pka"), "j")
+
+    assert result["uuid"] == "pka-1"
+    assert result["object_data"] == {"pka": 4.2}
+    assert captured == {"initial_smiles": "CCO", "name": "j"}
+
+
+def test_submit_one_raises_for_workflow_without_a_submitter(monkeypatch):
+    monkeypatch.setitem(sys.modules, "rowan", types.SimpleNamespace())
+
+    with pytest.raises(AttributeError, match="no submit function for workflow 'mystery'"):
+        score.submit_one("CCO", base_config(workflow_type="mystery"), "j")
+
+
+def test_score_candidate_flags_unextractable_metric(monkeypatch):
+    monkeypatch.setattr(score, "local_descriptors", lambda smiles: {"mw": 46.0})
+    monkeypatch.setattr(
+        score, "submit_one",
+        lambda smiles, cfg, name: {"uuid": "wf-1", "object_data": {"unrelated": 1}, "workflow_type": "solubility"},
+    )
+
+    result = score.score_candidate({"smiles": "CCO"}, base_config(), 1)
+
+    assert result["score"] is None
+    assert result["metric_path_used"] is None
+    assert "Could not extract metric 'logS'" in result["error"]
+    # The raw payload is retained so the agent can fix metric_path.
+    assert result["object_data"] == {"unrelated": 1}
 
 
 def test_score_batch_docking_maps_scores_and_invalid_smiles(monkeypatch):

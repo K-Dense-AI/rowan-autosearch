@@ -1,12 +1,25 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 import click
 from click.testing import CliRunner
 import pytest
 
 from rowan_tools import state
+
+
+# ---------------------------------------------------------------------------
+# Pure helpers
+# ---------------------------------------------------------------------------
+
+def test_now_iso_is_timezone_aware_and_second_resolution():
+    stamp = state.now_iso()
+    parsed = datetime.fromisoformat(stamp)
+
+    assert parsed.tzinfo is not None  # always UTC-aware
+    assert parsed.microsecond == 0  # truncated to seconds
 
 
 def test_parse_jsonish_handles_json_numbers_and_plain_strings():
@@ -219,3 +232,139 @@ def test_status_uses_score_when_primary_metric_key_is_absent(isolated_runs):
 
     assert status.exit_code == 0
     assert "composite=1.25" in status.output
+
+
+# ---------------------------------------------------------------------------
+# Config + candidate aggregation internals
+# ---------------------------------------------------------------------------
+
+def test_load_config_raises_clear_error_when_missing(isolated_runs):
+    with pytest.raises(FileNotFoundError, match="rowan-state init"):
+        state.load_config("does-not-exist")
+
+
+def _seed_two_iterations(run_id="demo", direction="maximize"):
+    state.save_config(run_id, {
+        "run_id": run_id,
+        "objective": "Optimize",
+        "objective_direction": direction,
+        "primary_metric": "logS",
+        "workflow_type": "solubility",
+        "max_iterations": 5,
+    })
+    state.save_iter(run_id, 1, {"candidates": [
+        {"smiles": "CCO", "score": 1.0, "satisfies_constraints": True},
+    ]})
+    state.save_iter(run_id, 2, {"candidates": [
+        {"smiles": "CO", "score": 2.0, "satisfies_constraints": True},
+        {"smiles": "CN", "score": None, "satisfies_constraints": True},
+    ]})
+
+
+def test_all_candidates_flattens_every_iteration_and_tags_origin(isolated_runs):
+    _seed_two_iterations()
+
+    cands = state.all_candidates("demo")
+
+    assert [c["smiles"] for c in cands] == ["CCO", "CO", "CN"]
+    assert [c["iter"] for c in cands] == [1, 2, 2]
+
+
+def test_best_so_far_returns_none_when_no_candidate_qualifies(isolated_runs):
+    state.save_config("demo", {
+        "run_id": "demo",
+        "objective": "Optimize",
+        "objective_direction": "maximize",
+        "primary_metric": "logS",
+        "workflow_type": "solubility",
+        "max_iterations": 5,
+    })
+    # One unscored, one scored-but-constraint-failing: neither is eligible.
+    state.save_iter("demo", 1, {"candidates": [
+        {"smiles": "CCO", "score": None, "satisfies_constraints": True},
+        {"smiles": "CCCCCCCC", "score": 9.0, "satisfies_constraints": False},
+    ]})
+
+    assert state.best_so_far("demo") is None
+
+
+# ---------------------------------------------------------------------------
+# init CLI edge cases
+# ---------------------------------------------------------------------------
+
+def _init_args(**overrides):
+    args = {
+        "--run": "demo",
+        "--objective": "Maximize logS",
+        "--direction": "maximize",
+        "--metric": "logS",
+        "--workflow": "solubility",
+        "--start-smiles": "CCO",
+    }
+    args.update(overrides)
+    flat = ["init"]
+    for k, v in args.items():
+        flat.extend([k, str(v)])
+    return flat
+
+
+def test_init_force_overwrites_existing_config(isolated_runs):
+    runner = CliRunner()
+    assert runner.invoke(state.cli, _init_args()).exit_code == 0
+
+    result = runner.invoke(
+        state.cli,
+        _init_args(**{"--objective": "Minimize logP", "--max-iter": 99}) + ["--force"],
+    )
+
+    assert result.exit_code == 0, result.output
+    cfg = state.load_config("demo")
+    assert cfg["objective"] == "Minimize logP"
+    assert cfg["max_iterations"] == 99
+
+
+def test_init_rejects_objective_term_that_is_not_a_json_object(isolated_runs):
+    result = CliRunner().invoke(
+        state.cli,
+        _init_args() + ["--objective-term", "[1, 2, 3]"],
+    )
+
+    assert result.exit_code != 0
+    assert "expected a JSON object" in result.output
+
+
+def test_init_omits_optional_sections_when_not_supplied(isolated_runs):
+    assert CliRunner().invoke(state.cli, _init_args()).exit_code == 0
+
+    cfg = state.load_config("demo")
+    assert "workflow_params" not in cfg
+    assert "optimization_objective" not in cfg
+    assert cfg["candidates_per_iter"] == 4
+
+
+# ---------------------------------------------------------------------------
+# status / list CLI fallbacks
+# ---------------------------------------------------------------------------
+
+def test_status_reports_no_best_before_any_eligible_candidate(isolated_runs):
+    state.save_config("demo", {
+        "run_id": "demo",
+        "objective": "Maximize logS",
+        "objective_direction": "maximize",
+        "primary_metric": "logS",
+        "workflow_type": "solubility",
+        "max_iterations": 3,
+    })
+
+    status = CliRunner().invoke(state.cli, ["status", "--run", "demo"])
+
+    assert status.exit_code == 0
+    assert "Best so far:   (none yet)" in status.output
+    assert "Iterations:    0 / 3" in status.output
+
+
+def test_list_runs_reports_empty_when_no_runs_directory(isolated_runs):
+    result = CliRunner().invoke(state.cli, ["list"])
+
+    assert result.exit_code == 0
+    assert "No runs yet." in result.output

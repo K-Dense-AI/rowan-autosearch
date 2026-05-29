@@ -32,6 +32,41 @@ def test_canonical_collapses_equivalent_smiles_and_rejects_garbage():
     assert surrogate.canonical("not a smiles") is None
 
 
+def test_morgan_fp_returns_none_for_invalid_smiles():
+    assert surrogate.morgan_fp("not a smiles") is None
+    assert surrogate.morgan_fp("CCO") is not None
+
+
+def test_murcko_scaffold_strips_substituents_and_handles_acyclic():
+    # Toluene and benzene share the benzene scaffold.
+    assert surrogate.murcko_scaffold("Cc1ccccc1") == surrogate.murcko_scaffold("c1ccccc1")
+    # Acyclic molecules have an empty Murcko scaffold.
+    assert surrogate.murcko_scaffold("CCO") == ""
+
+
+# ---------------------------------------------------------------------------
+# Tanimoto kernel
+# ---------------------------------------------------------------------------
+
+def test_tanimoto_kernel_is_symmetric_with_unit_self_similarity():
+    X = np.vstack([surrogate.featurize(s) for s in ["CCO", "CCN", "c1ccccc1"]])
+
+    K = surrogate.tanimoto_kernel(X, X)
+
+    assert K.shape == (3, 3)
+    assert np.allclose(np.diag(K), 1.0)
+    assert np.allclose(K, K.T)
+    assert np.all((K >= 0) & (K <= 1.0 + 1e-9))
+
+
+def test_tanimoto_kernel_handles_all_zero_rows_without_dividing_by_zero():
+    zero = np.zeros((1, surrogate.FP_BITS))
+    K = surrogate.tanimoto_kernel(zero, zero)
+
+    assert K.shape == (1, 1)
+    assert K[0, 0] == 0.0  # 0/0 is defined as 0, not NaN
+
+
 # ---------------------------------------------------------------------------
 # Expected Improvement
 # ---------------------------------------------------------------------------
@@ -55,6 +90,17 @@ def test_expected_improvement_collapses_to_clipped_improvement_at_zero_sigma():
     # Confident and better than incumbent -> positive; confident and worse -> 0.
     assert surrogate.expected_improvement(2.0, 0.0, 1.0, "maximize") == pytest.approx(0.99)
     assert surrogate.expected_improvement(0.5, 0.0, 1.0, "maximize") == 0.0
+    # Same logic mirrored for minimize: confident-and-lower beats the incumbent.
+    assert surrogate.expected_improvement(0.0, 0.0, 1.0, "minimize") == pytest.approx(0.99)
+    assert surrogate.expected_improvement(1.5, 0.0, 1.0, "minimize") == 0.0
+
+
+def test_expected_improvement_grows_with_uncertainty_at_the_incumbent():
+    # Sitting exactly on the incumbent, more uncertainty means more upside.
+    low_sigma = surrogate.expected_improvement(1.0, 0.2, 1.0, "maximize", xi=0.0)
+    high_sigma = surrogate.expected_improvement(1.0, 1.0, 1.0, "maximize", xi=0.0)
+
+    assert high_sigma > low_sigma > 0
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +171,13 @@ def test_maxmin_select_returns_distinct_indices():
     assert picked[0] == 0  # seeded by the best-ranked item
 
 
+def test_maxmin_select_returns_all_indices_when_k_exceeds_pool():
+    fps = [surrogate.morgan_fp(s) for s in _TRAIN_SMILES[:3]]
+
+    assert surrogate.maxmin_select(fps, 10) == [0, 1, 2]
+    assert surrogate.maxmin_select([], 3) == []
+
+
 # ---------------------------------------------------------------------------
 # Ranking: cold start vs modeled
 # ---------------------------------------------------------------------------
@@ -158,6 +211,68 @@ def _seed_run(run_id, smiles_scores, *, direction="maximize", constraints=None):
         "iteration_best": None,
         "decision": "continue",
     })
+
+
+# ---------------------------------------------------------------------------
+# History -> training set
+# ---------------------------------------------------------------------------
+
+def test_evaluated_smiles_tracks_every_scored_candidate_by_canonical_key(isolated_runs):
+    state.save_config("demo", {
+        "run_id": "demo", "objective_direction": "maximize",
+        "primary_metric": "logS", "workflow_type": "solubility",
+        "constraints": {}, "max_iterations": 20,
+    })
+    state.save_iter("demo", 1, {"candidates": [
+        {"smiles": "OCC", "score": -1.0, "satisfies_constraints": True},   # CCO, passes
+        {"smiles": "c1ccccc1", "score": 0.5, "satisfies_constraints": False},  # scored but fails
+        {"smiles": "CCN", "score": None, "satisfies_constraints": True},   # never hit Rowan
+    ]})
+
+    seen = surrogate.evaluated_smiles("demo")
+
+    # Dedup is by canonical SMILES, and constraint-failing-but-scored still counts.
+    assert surrogate.canonical("CCO") in seen
+    assert surrogate.canonical("c1ccccc1") in seen
+    # Unscored candidates never consumed credits, so they are not "seen".
+    assert surrogate.canonical("CCN") not in seen
+
+
+def test_training_set_dedups_and_drops_constraint_failures(isolated_runs):
+    state.save_config("demo", {
+        "run_id": "demo", "objective_direction": "maximize",
+        "primary_metric": "logS", "workflow_type": "solubility",
+        "constraints": {}, "max_iterations": 20,
+    })
+    state.save_iter("demo", 1, {"candidates": [
+        {"smiles": "CCO", "score": -2.0, "satisfies_constraints": True},
+        {"smiles": "c1ccccc1", "score": 9.0, "satisfies_constraints": False},
+    ]})
+    # Later iteration re-scores CCO (via a non-canonical spelling): newest wins.
+    state.save_iter("demo", 2, {"candidates": [
+        {"smiles": "OCC", "score": -1.5, "satisfies_constraints": True},
+    ]})
+
+    X, y, fps, canon = surrogate.training_set("demo")
+
+    assert X.shape == (1, surrogate.FP_BITS)
+    assert canon == [surrogate.canonical("CCO")]
+    assert y.tolist() == [-1.5]  # latest score, not the original -2.0
+    assert len(fps) == 1
+
+
+def test_training_set_is_empty_for_a_fresh_run(isolated_runs):
+    state.save_config("demo", {
+        "run_id": "demo", "objective_direction": "maximize",
+        "primary_metric": "logS", "workflow_type": "solubility",
+        "constraints": {}, "max_iterations": 20,
+    })
+
+    X, y, fps, canon = surrogate.training_set("demo")
+
+    assert X.shape == (0, surrogate.FP_BITS)
+    assert y.shape == (0,)
+    assert fps == [] and canon == []
 
 
 def test_rank_candidates_cold_start_falls_back_to_novelty(isolated_runs):
@@ -197,8 +312,41 @@ def test_rank_candidates_modeled_uses_ei_and_flags_duplicates(isolated_runs):
     by_smiles = {r["smiles"]: r for r in result["records"]}
     assert by_smiles["OCC"]["already_evaluated"] is True
     assert by_smiles["CC#N"]["already_evaluated"] is False
+    # Modeled records carry a surrogate prediction, uncertainty, and EI.
+    assert {"pred", "pred_sigma", "ei"} <= set(by_smiles["CC#N"])
     # Duplicate is excluded from the recommendable pool.
     assert "OCC" not in {r["smiles"] for r in result["ranked_pool"]}
+
+
+def test_rank_candidates_include_seen_keeps_duplicates_in_pool(isolated_runs):
+    _seed_run("demo", list(zip(_TRAIN_SMILES, np.linspace(-2.0, 1.0, len(_TRAIN_SMILES)))))
+    cfg = state.load_config("demo")
+
+    result = surrogate.rank_candidates(
+        "demo",
+        [{"smiles": "OCC", "parent_smiles": "", "design_note": "dup of CCO"}],
+        cfg=cfg,
+        include_seen=True,
+    )
+
+    pool = {r["smiles"] for r in result["ranked_pool"]}
+    assert "OCC" in pool  # not filtered out when include_seen=True
+
+
+def test_rank_candidates_respect_constraints_toggle_admits_violators(isolated_runs):
+    _seed_run(
+        "demo",
+        list(zip(_TRAIN_SMILES, np.linspace(-2.0, 1.0, len(_TRAIN_SMILES)))),
+        constraints={"mw_max": 50},
+    )
+    cfg = state.load_config("demo")
+    heavy = {"smiles": "CCCCCCCCCCCCO", "parent_smiles": "", "design_note": "too heavy"}
+
+    filtered = surrogate.rank_candidates("demo", [heavy], cfg=cfg)
+    unfiltered = surrogate.rank_candidates("demo", [heavy], cfg=cfg, respect_constraints=False)
+
+    assert filtered["ranked_pool"] == []  # busts mw_max
+    assert {r["smiles"] for r in unfiltered["ranked_pool"]} == {"CCCCCCCCCCCCO"}
 
 
 # ---------------------------------------------------------------------------
@@ -255,3 +403,40 @@ def test_suggest_cli_errors_without_candidates(isolated_runs):
 
     assert result.exit_code != 0
     assert "No candidates" in result.output
+
+
+def test_suggest_cli_generates_candidates_from_parent(isolated_runs):
+    _seed_run("demo", list(zip(_TRAIN_SMILES, np.linspace(-2.0, 1.0, len(_TRAIN_SMILES)))))
+
+    result = CliRunner().invoke(
+        surrogate.cli,
+        ["--run", "demo", "--from-parent", "c1ccccc1",
+         "--strategy", "scan-subst", "--n", "6", "--top-k", "3", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["modeled"] is True
+    assert len(payload["records"]) > 0
+    assert 1 <= len(payload["recommended"]) <= 3
+    # Generated candidates all trace back to the requested parent.
+    assert all(r.get("parent_smiles") == "c1ccccc1" for r in payload["recommended"])
+
+
+def test_suggest_cli_cold_start_ranks_by_novelty_in_plain_text(isolated_runs):
+    _seed_run("demo", [("CCO", -2.0), ("CCN", -1.0)])  # below MIN_TRAIN
+
+    result = CliRunner().invoke(
+        surrogate.cli,
+        ["--run", "demo",
+         "--candidate", "CCS||thiol",
+         "--candidate", "FC(F)(F)c1ccc(Br)cc1||very different"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "cold start" in result.output
+    assert "NOVELTY" in result.output
+    # The structurally distant candidate is recommended ahead of the near one.
+    lines = result.output.splitlines()
+    rec_lines = [ln for ln in lines if ln.startswith(("CCS", "FC(F)"))]
+    assert rec_lines and rec_lines[0].startswith("FC(F)")

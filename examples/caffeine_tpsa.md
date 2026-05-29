@@ -5,6 +5,13 @@ analogs with higher topological polar surface area. It is a deliberately
 creative prompt for exploring how far a familiar stimulant can be pushed toward
 lower passive CNS penetration while staying small.
 
+The TPSA target has a mechanistic basis: passive blood–brain-barrier
+permeability falls off sharply once TPSA exceeds roughly 90 Å² (CNS-active
+drugs typically sit below ~70 Å²). Caffeine's TPSA is about 62 Å², so the
+search has to add ~30 Å² of polar surface — within the MW, logP, and H-bond
+limits — to push the scaffold into the low-penetration regime, which is what
+makes the exercise non-trivial.
+
 ```bash
 uv run rowan-state init \
   --run caffeine_tpsa \

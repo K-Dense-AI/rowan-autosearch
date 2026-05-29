@@ -1,7 +1,11 @@
 # Example: water-solubilize a coumarin dye
 
-This example starts from coumarin and asks the agent to improve aqueous
-solubility while keeping the compact fluorescent dye scaffold recognizable.
+This example starts from coumarin — the parent chromophore of the coumarin dye
+family — and asks the agent to improve aqueous solubility while keeping that
+compact scaffold recognizable. (Unsubstituted coumarin is only weakly
+fluorescent; the bright laser/fluorophore dyes are its 7-amino and 7-hydroxy
+derivatives, which is also where polar, solubilizing substitution naturally
+goes.)
 
 ```bash
 uv run rowan-state init \

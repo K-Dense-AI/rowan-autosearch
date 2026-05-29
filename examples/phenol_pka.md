@@ -30,5 +30,8 @@ The agent should:
 3. If one substituent class works, branch into combinations or positional
    variants while monitoring MW and logP.
 
-Expected: nitro or cyano substitution should lower the phenolic pKa relative to
-phenol while staying under the MW and logP limits.
+Expected: relative to phenol (pKa ≈ 10), a single strong electron-withdrawing
+group lands near the target (e.g. 4-nitrophenol, pKa ≈ 7.1; 4-cyanophenol,
+pKa ≈ 8.0), and combinations or stronger withdrawing patterns push well below
+it (e.g. 2,4-dinitrophenol, pKa ≈ 4.1) — all while staying under the MW and
+logP limits.
