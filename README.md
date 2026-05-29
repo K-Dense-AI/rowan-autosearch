@@ -197,6 +197,41 @@ new SMILES variants:
 Output is pre-formatted as `SMILES|PARENT|NOTE`; the agent should still
 filter for chemical sense before scoring.
 
+### Surrogate active-learning advisor (`rowan-suggest`)
+
+A quantitative co-pilot that keeps the agent as the optimizer but stops it from
+spending Rowan credits blind. It learns a cheap surrogate (Morgan-fingerprint
+random forest by default, or a Tanimoto-kernel Gaussian process) from the
+run's *own* scored history and uses it to:
+
+- **dedup** candidate SMILES against molecules already evaluated (canonical
+  SMILES match), so credits are never re-spent;
+- **rank** proposals by **Expected Improvement** over the current best,
+  direction-aware, with a predicted value and uncertainty for each;
+- **annotate** novelty (Tanimoto distance to the evaluated set) and Bemis-Murcko
+  scaffold, and filter out candidates that fail the run's RDKit constraints;
+- **select** a chemically diverse top-k via MaxMin so the search does not
+  collapse into one chemotype;
+- **report its own trustworthiness** via cross-validated `R^2`/MAE, and fall
+  back to pure novelty ranking (clearly labeled) when there is too little data
+  to model.
+
+It is entirely local — no Rowan calls — and emits paste-ready
+`SMILES|PARENT|NOTE` lines for `rowan-score` (or structured `--json`). See
+[`docs/active-learning.md`](docs/active-learning.md).
+
+```bash
+# Rank the agent's own proposals before scoring:
+uv run rowan-suggest --run <run_id> \
+  --candidate "<SMILES>|<PARENT>|<NOTE>" \
+  --candidate "<SMILES>|<PARENT>|<NOTE>" \
+  --top-k 4
+
+# Or generate and rank in one shot from a parent:
+uv run rowan-suggest --run <run_id> --from-parent "<parent>" \
+  --strategy all --n 20 --top-k 4
+```
+
 ### Auditable HTML report
 
 `rowan-report` regenerates plots and `report.html` from scratch on demand:
@@ -207,6 +242,10 @@ filter for chemical sense before scoring.
 - `grid.png` — top-K 2D structures.
 - `genealogy.png` — parent-to-child edges across iterations, color-coded by
   improvement.
+- `chemical_space.png` — 2D PCA of Morgan fingerprints, colored by score, for
+  chemotype-coverage at a glance.
+- `parity.png` — the surrogate's cross-validated predicted-vs-actual accuracy
+  (how much to trust `rowan-suggest`).
 - `report.html` — embedded summary, plots, sortable candidate tables,
   per-iteration rationales, and a 3D view of the current winner.
 
@@ -246,6 +285,7 @@ rowan-state    initialize / inspect runs
 rowan-score    score candidates with Rowan + RDKit
 rowan-report   regenerate plots and report.html
 rowan-propose  RDKit-based brainstorming helper
+rowan-suggest  surrogate active-learning advisor (dedup + rank by EI)
 ```
 
 ---
@@ -434,6 +474,36 @@ uv run rowan-propose --smiles "<parent>" --strategy bioisostere|scan-subst|brics
 Output is `SMILES|PARENT|NOTE` lines, ready to feed into `rowan-score`.
 Treat as inspiration, not auto-submit.
 
+### `rowan-suggest` — surrogate active-learning advisor
+
+```bash
+uv run rowan-suggest --run <run_id> \
+  [--candidate "<SMILES>|<PARENT>|<NOTE>" ...] \
+  [--from-parent "<parent>" --strategy bioisostere|scan-subst|brics|all --n 20] \
+  [--top-k 4] [--xi 0.01] [--model rf|gp] \
+  [--diverse|--no-diverse] \
+  [--respect-constraints|--no-respect-constraints] \
+  [--include-seen] [--json]
+```
+
+Learns from the run's scored history, dedups against already-evaluated
+molecules, ranks by Expected Improvement (or novelty in cold start), and
+recommends a diverse, constraint-passing subset as paste-ready
+`SMILES|PARENT|NOTE` lines.
+
+| Option | Notes |
+| --- | --- |
+| `--candidate` | Repeatable. Proposals to screen/rank. |
+| `--from-parent` | Auto-generate variants via `rowan-propose` from this parent. |
+| `--strategy` / `--n` | Strategy and per-strategy count for `--from-parent`. |
+| `--top-k` | How many candidates to recommend (default 4). |
+| `--xi` | Expected-improvement exploration parameter (default 0.01). |
+| `--model` | `rf` (random forest, default) or `gp` (Tanimoto-kernel GP). |
+| `--diverse` | Apply MaxMin diversity over the top pool (default on). |
+| `--respect-constraints` | Drop candidates that fail the run's RDKit gates (default on). |
+| `--include-seen` | Include molecules already evaluated in this run. |
+| `--json` | Emit structured JSON instead of paste-ready lines. |
+
 ---
 
 ## Run Outputs
@@ -451,7 +521,9 @@ runs/<run_id>/
 │   ├── progress.png            # score per iter + best-so-far
 │   ├── pareto.png              # score vs MW
 │   ├── grid.png                # top-K 2D structures
-│   └── genealogy.png           # parent → child edges
+│   ├── genealogy.png           # parent → child edges
+│   ├── chemical_space.png      # PCA of fingerprints, colored by score
+│   └── parity.png              # surrogate cross-validated accuracy
 └── report.html                 # everything stitched together + 3D winner
 ```
 
@@ -575,9 +647,11 @@ The top-level README is a feature overview. For the full handbook, see
 
 ## Current Limitations
 
-- **The optimizer is external by design.** No built-in BO/GA/active learning
-  — the AI agent is the proposer. (A pluggable optimizer interface is on the
-  roadmap.)
+- **The optimizer is external by design.** The AI agent is the proposer; there
+  is no autonomous BO/GA loop. `rowan-suggest` adds an *advisory*
+  surrogate/active-learning layer (dedup + Expected-Improvement ranking +
+  diversity), but it only ranks the agent's proposals — it never submits to
+  Rowan on its own.
 - Reports center on one scalar `score`. Composite objectives are recorded
   per term in JSON, but plots show only the combined score for now.
 - `candidates_per_iter` and `max_iterations` are guidance for the agent; the

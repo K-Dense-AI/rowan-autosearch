@@ -27,7 +27,22 @@ Each iteration:
    (typically 4). Each candidate must have a SMILES, a parent SMILES (the
    molecule it's derived from — usually the current best or last iteration's
    pick), and a one-line *design note* explaining the change.
-4. **Score them.**
+4. **Pre-screen before spending credits.** Once at least ~6 candidates have
+   been scored, run your proposals through the surrogate advisor first. It
+   learns from this run's own history to dedup against molecules already
+   evaluated, rank your proposals by Expected Improvement, and pick a
+   chemically diverse subset — all locally, with no Rowan calls.
+   ```
+   uv run rowan-suggest --run <run_id> \
+     --candidate "<SMILES>|<PARENT>|<NOTE>" \
+     --candidate "<SMILES>|<PARENT>|<NOTE>" \
+     --top-k 4
+   ```
+   Score the lines it recommends. Trust the ranking only as far as the
+   reported CV `R^2` allows; with little data (cold start) it ranks by novelty
+   instead and says so. This is advisory — you are still the optimizer, so
+   override it when your chemical reasoning disagrees.
+5. **Score them.**
    ```
    uv run rowan-score --run <run_id> \
      --rationale "What ties these candidates together — your hypothesis." \
@@ -37,12 +52,14 @@ Each iteration:
    ```
    This submits to Rowan in parallel, waits for results, parses the metric,
    checks constraints locally via RDKit, and writes the iteration JSON.
-5. **Rebuild the report.**
+6. **Rebuild the report.**
    ```
    uv run rowan-report --run <run_id>
    ```
-   Open `runs/<run_id>/report.html` to see progress visually.
-6. **Decide.** Did the metric improve? Are you stuck? If converged or stuck,
+   Open `runs/<run_id>/report.html` to see progress visually. The "Surrogate &
+   chemical space" panel shows chemotype coverage and how accurate the
+   surrogate currently is.
+7. **Decide.** Did the metric improve? Are you stuck? If converged or stuck,
    re-run `rowan-score` with `--decision converged` or `--decision stuck` (no
    new candidates needed — just amend the latest iteration's decision).
 
@@ -78,6 +95,14 @@ You're a medicinal chemist now. Some heuristics:
   ones, drop the rest.
   ```
   uv run rowan-propose --smiles "<parent>" --strategy bioisostere --n 6
+  ```
+- **Let `rowan-suggest` triage a long idea list.** When you (or `rowan-propose`)
+  generate many variants, pipe them through the surrogate advisor to drop
+  duplicates and constraint-busters and rank by Expected Improvement before
+  spending credits. It can also generate and rank in one shot:
+  ```
+  uv run rowan-suggest --run <run_id> --from-parent "<parent>" \
+    --strategy all --n 20 --top-k 4
   ```
 
 ## Writing rationales

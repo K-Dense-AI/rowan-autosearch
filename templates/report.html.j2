@@ -198,6 +198,19 @@
     </div>
   </div>
 
+  <h2>Surrogate &amp; chemical space</h2>
+  <div class="sub" style="margin-bottom:12px;">
+    Built from this run's own scored history. The chemical-space map shows
+    chemotype coverage (PCA of Morgan fingerprints, colored by
+    {{ cfg.primary_metric }}); the parity plot is the surrogate's
+    cross-validated accuracy — how much to trust <code>rowan-suggest</code>'s
+    expected-improvement ranking.
+  </div>
+  <div class="grid plots">
+    <div class="card plot-card"><img src="plots/chemical_space.png" alt="chemical space"></div>
+    <div class="card plot-card"><img src="plots/parity.png" alt="surrogate parity"></div>
+  </div>
+
   <h2>Iteration log</h2>
   {% for it in iterations | reverse %}
   <details {% if loop.first %}open{% endif %}>

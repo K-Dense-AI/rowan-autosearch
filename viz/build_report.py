@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from jinja2 import Template
 
-from rowan_tools import state
+from rowan_tools import state, surrogate
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATE_PATH = ROOT / "templates" / "report.html.j2"
@@ -295,6 +295,121 @@ def plot_genealogy(cfg: dict[str, Any], cands: list[dict[str, Any]],
     plt.close(fig)
 
 
+def _placeholder(out: Path, msg: str) -> None:
+    _setup_style()
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.text(0.5, 0.5, msg, ha="center", va="center", transform=ax.transAxes,
+            color="#666", fontsize=13)
+    ax.set_axis_off()
+    fig.savefig(out, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_chemical_space(cfg: dict[str, Any], cands: list[dict[str, Any]],
+                        out: Path) -> None:
+    """2D PCA of Morgan fingerprints, colored by score — chemotype coverage."""
+    valid = []
+    fps = []
+    for c in cands:
+        if c.get("score") is None:
+            continue
+        fp = surrogate.featurize(c.get("smiles", ""))
+        if fp is None:
+            continue
+        valid.append(c)
+        fps.append(fp)
+
+    if len(valid) < 3:
+        _placeholder(out, "Chemical-space map needs >= 3 scored candidates")
+        return
+
+    X = np.vstack(fps)
+    try:
+        from sklearn.decomposition import PCA
+
+        coords = PCA(n_components=2, random_state=0).fit_transform(X)
+    except Exception:
+        _placeholder(out, "Could not compute PCA embedding")
+        return
+
+    _setup_style()
+    fig, ax = plt.subplots(figsize=(8, 5.5))
+    scores = np.array([c["score"] for c in valid])
+    sat = np.array([c.get("satisfies_constraints", True) for c in valid])
+    sc = ax.scatter(coords[:, 0], coords[:, 1], c=scores, cmap="viridis", s=90,
+                    edgecolor=np.where(sat, "white", "red"), linewidth=1.4, alpha=0.9)
+    cbar = fig.colorbar(sc, ax=ax)
+    cbar.set_label(cfg["primary_metric"])
+
+    direction = cfg["objective_direction"]
+    best = (max if direction == "maximize" else min)(valid, key=lambda c: c["score"])
+    bi = valid.index(best)
+    ax.scatter([coords[bi, 0]], [coords[bi, 1]], s=320, facecolors="none",
+               edgecolors="#dc2626", linewidth=2.5, label="best", zorder=4)
+
+    ax.set_xlabel("PC 1")
+    ax.set_ylabel("PC 2")
+    ax.set_title("Chemical space (Morgan-fingerprint PCA)")
+    ax.legend(loc="best", framealpha=0.95)
+    fig.tight_layout()
+    fig.savefig(out, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_parity(cfg: dict[str, Any], cands: list[dict[str, Any]],
+                out: Path, model: str = "rf") -> None:
+    """Surrogate cross-validated predicted-vs-actual — do we trust the model?"""
+    rows: dict[str, dict[str, Any]] = {}
+    for c in cands:
+        if c.get("score") is None or not c.get("satisfies_constraints", True):
+            continue
+        key = surrogate.canonical(c.get("smiles", "")) or c.get("smiles")
+        if key:
+            rows[key] = c
+
+    X, y = [], []
+    for c in rows.values():
+        fp = surrogate.featurize(c["smiles"])
+        if fp is None:
+            continue
+        X.append(fp)
+        y.append(float(c["score"]))
+
+    if len(X) < surrogate.MIN_TRAIN:
+        _placeholder(out, f"Parity plot needs >= {surrogate.MIN_TRAIN} "
+                          f"constraint-passing candidates ({len(X)} so far)")
+        return
+
+    cv = surrogate.cv_predictions(np.vstack(X), np.asarray(y, dtype=float), model=model)
+    if cv is None:
+        _placeholder(out, "Not enough data for cross-validation")
+        return
+
+    y_true, y_pred = cv
+    mae = float(np.mean(np.abs(y_true - y_pred)))
+    ss_res = float(np.sum((y_true - y_pred) ** 2))
+    ss_tot = float(np.sum((y_true - y_true.mean()) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-12 else float("nan")
+
+    _setup_style()
+    fig, ax = plt.subplots(figsize=(7.5, 5.5))
+    ax.scatter(y_true, y_pred, s=80, c="#2563eb", edgecolor="white",
+               linewidth=1.2, alpha=0.85)
+    lo = float(min(y_true.min(), y_pred.min()))
+    hi = float(max(y_true.max(), y_pred.max()))
+    pad = 0.05 * (hi - lo + 1e-9)
+    ax.plot([lo - pad, hi + pad], [lo - pad, hi + pad], color="#dc2626",
+            linestyle="--", linewidth=1.5, alpha=0.8, label="ideal")
+    ax.set_xlabel(f"measured {cfg['primary_metric']}")
+    ax.set_ylabel(f"surrogate-predicted {cfg['primary_metric']}")
+    ax.set_title(f"Surrogate parity ({model.upper()}, leave-out CV)  "
+                 f"R^2={r2:.2f}  MAE={mae:.2f}  n={len(y_true)}")
+    ax.legend(loc="best", framealpha=0.95)
+    fig.tight_layout()
+    fig.savefig(out, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+
+
 # ---------------------------------------------------------------------------
 # 3D coords for the best candidate (embedded as SDF for 3Dmol.js)
 # ---------------------------------------------------------------------------
@@ -338,6 +453,8 @@ def build_report(run_id: str, top_k: int = 9, live_refresh_seconds: int = 10) ->
     plot_pareto(cfg, cands, plots_dir / "pareto.png")
     plot_grid(cfg, cands, plots_dir / "grid.png", k=top_k)
     plot_genealogy(cfg, cands, plots_dir / "genealogy.png")
+    plot_chemical_space(cfg, cands, plots_dir / "chemical_space.png")
+    plot_parity(cfg, cands, plots_dir / "parity.png")
 
     best = state.best_so_far(run_id)
     sdf = best_sdf(best)

@@ -10,17 +10,20 @@ requires-python = ">=3.12"
 dependencies = [
     "rowan-python>=3.0.7",
     "rdkit>=2024.3.1",
+    "scikit-learn>=1.4",
     "matplotlib>=3.8",
     "numpy>=1.26",
     "jinja2>=3.1",
     "python-dotenv>=1.0",
     "click>=8.1",
+    "pytest>=9.0.3",
 ]
 
 [project.scripts]
 rowan-state = "rowan_tools.state:cli"
 rowan-score = "rowan_tools.score:cli"
 rowan-propose = "rowan_tools.propose:cli"
+rowan-suggest = "rowan_tools.surrogate:cli"
 rowan-report = "viz.build_report:cli"
 
 [build-system]

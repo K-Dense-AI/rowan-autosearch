@@ -16,6 +16,8 @@ from common failures.
   names, common metric aliases, and how metric extraction works.
 - [Scoring and reporting](scoring-and-reporting.md): candidate format, Rowan
   submission behavior, iteration JSON, plots, and `report.html`.
+- [Active-learning advisor](active-learning.md): how `rowan-suggest` dedups,
+  ranks by Expected Improvement, and pre-screens proposals before scoring.
 - [File formats](file-formats.md): concrete schemas for run directories,
   config files, and iteration records.
 - [Examples](examples.md): recommended examples and when to use each one.
