@@ -19,7 +19,7 @@ into an auditable HTML report.
 Joint work between [K-Dense](https://www.k-dense.ai) and
 [Rowan Scientific](https://www.rowansci.com/).
 
-> Recommended driver models: **Claude Opus 4.7**, **GPT 5.5**, or
+> Recommended driver models: **Claude Opus 4.8**, **GPT 5.5**, or
 > **Gemini 3.1 Pro**. Any agent that can read `AGENTS.md` and call CLI tools
 > will work.
 
