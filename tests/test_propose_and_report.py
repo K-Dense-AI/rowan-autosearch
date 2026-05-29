@@ -2,9 +2,45 @@ from __future__ import annotations
 
 from click.testing import CliRunner
 
-from rowan_tools import propose, state
+from rowan_tools import propose, state, surrogate
 from viz import build_report
 
+
+def _base_cfg(**overrides):
+    cfg = {
+        "objective": "Maximize logS",
+        "objective_direction": "maximize",
+        "primary_metric": "logS",
+    }
+    cfg.update(overrides)
+    return cfg
+
+
+def _scored(smiles, score, iter_n, *, mw=None, parent=None, ok=True):
+    metrics = {"logS": score}
+    if mw is not None:
+        metrics["mw"] = mw
+    rec = {
+        "iter": iter_n,
+        "smiles": smiles,
+        "score": score,
+        "metrics": metrics,
+        "satisfies_constraints": ok,
+    }
+    if parent is not None:
+        rec["parent_smiles"] = parent
+    return rec
+
+
+def _is_valid_smiles(smiles):
+    from rdkit import Chem
+
+    return Chem.MolFromSmiles(smiles) is not None
+
+
+# ---------------------------------------------------------------------------
+# rowan-propose: mutation strategies
+# ---------------------------------------------------------------------------
 
 def test_proposal_helpers_return_empty_for_invalid_smiles():
     assert propose.bioisostere_variants("not a smiles") == []
@@ -18,6 +54,46 @@ def test_aromatic_substitution_variants_are_unique_and_limited():
     assert len(variants) <= 3
     assert len({smiles for smiles, _ in variants}) == len(variants)
     assert all("add -" in note for _, note in variants)
+
+
+def test_bioisostere_variants_apply_known_swaps_and_stay_valid():
+    variants = propose.bioisostere_variants("CC(=O)O", n=8)
+    parent_canon = surrogate.canonical("CC(=O)O")
+
+    assert variants  # carboxylic acid has several registered bioisosteres
+    smis = {smiles for smiles, _ in variants}
+    assert parent_canon not in smis  # never re-proposes the parent
+    assert all(_is_valid_smiles(smiles) for smiles, _ in variants)
+    assert all("." not in smiles for smiles, _ in variants)  # no fragmented products
+    assert all(note.startswith("bioisostere:") for _, note in variants)
+
+
+def test_brics_variants_recombine_fragments_into_new_molecules():
+    parent = "CC(C)Cc1ccc(C(C)C(=O)O)cc1"  # decomposes into multiple BRICS fragments
+    variants = propose.brics_variants(parent, n=4)
+
+    assert variants
+    assert len(variants) <= 4
+    assert len({smiles for smiles, _ in variants}) == len(variants)
+    assert all(_is_valid_smiles(smiles) for smiles, _ in variants)
+    assert all(note == "BRICS recombination" for _, note in variants)
+
+
+def test_propose_cli_all_strategy_emits_unique_lines():
+    result = CliRunner().invoke(
+        propose.cli,
+        ["--smiles", "CC(=O)Oc1ccccc1", "--strategy", "all", "--n", "3", "--seed", "7"],
+    )
+
+    assert result.exit_code == 0, result.output
+    lines = [ln for ln in result.output.splitlines() if ln.strip()]
+    assert lines
+    smis = [ln.split("|")[0] for ln in lines]
+    assert len(smis) == len(set(smis))  # deduplicated across strategies
+    for ln in lines:
+        parts = ln.split("|")
+        assert len(parts) == 3
+        assert parts[1] == "CC(=O)Oc1ccccc1"  # parent column preserved
 
 
 def test_propose_cli_prints_pipe_delimited_candidates():
@@ -95,9 +171,80 @@ def test_plot_genealogy_handles_duplicate_smiles(tmp_path):
     assert out.exists() and out.stat().st_size > 0
 
 
+def test_plot_progress_and_pareto_render_with_scored_candidates(tmp_path):
+    cfg = _base_cfg()
+    cands = [
+        _scored("CCO", 1.0, 1, mw=46.0),
+        _scored("CCCCCCCC", 2.5, 1, mw=114.0, ok=False),  # violates constraints
+        _scored("CO", 1.8, 2, mw=32.0),
+    ]
+
+    progress = tmp_path / "progress.png"
+    pareto = tmp_path / "pareto.png"
+    build_report.plot_progress(cfg, cands, progress)
+    build_report.plot_pareto(cfg, cands, pareto)
+
+    assert progress.exists() and progress.stat().st_size > 0
+    assert pareto.exists() and pareto.stat().st_size > 0
+
+
+def test_plot_grid_renders_top_k_structures(tmp_path):
+    cfg = _base_cfg()
+    cands = [
+        _scored("CCO", 1.0, 1),
+        _scored("c1ccccc1", 2.0, 1),
+        _scored("CC(=O)O", 0.5, 2),
+    ]
+
+    out = tmp_path / "grid.png"
+    build_report.plot_grid(cfg, cands, out, k=2)
+
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_plot_chemical_space_needs_three_points(tmp_path):
+    cfg = _base_cfg()
+    too_few = tmp_path / "few.png"
+    enough = tmp_path / "enough.png"
+
+    build_report.plot_chemical_space(cfg, [_scored("CCO", 1.0, 1)], too_few)
+    build_report.plot_chemical_space(
+        cfg,
+        [_scored("CCO", 1.0, 1), _scored("c1ccccc1", 2.0, 1), _scored("CC(=O)O", 0.5, 2)],
+        enough,
+    )
+
+    # Both render (the first as a placeholder), so just confirm files exist.
+    assert too_few.exists() and too_few.stat().st_size > 0
+    assert enough.exists() and enough.stat().st_size > 0
+
+
+def test_plot_parity_renders_once_enough_data_exists(tmp_path):
+    cfg = _base_cfg()
+    smis = ["CCO", "CCCO", "CCCCO", "c1ccccc1", "c1ccccc1O", "CC(=O)O", "CCN"]
+    cands = [_scored(s, float(i), 1) for i, s in enumerate(smis)]
+
+    out = tmp_path / "parity.png"
+    build_report.plot_parity(cfg, cands, out)
+
+    assert len(cands) >= surrogate.MIN_TRAIN
+    assert out.exists() and out.stat().st_size > 0
+
+
 def test_best_sdf_returns_empty_for_missing_or_invalid_best():
     assert build_report.best_sdf(None) == ""
     assert build_report.best_sdf({"smiles": "not a smiles"}) == ""
+
+
+def test_best_sdf_emits_a_3d_molblock_for_a_valid_molecule():
+    block = build_report.best_sdf({"smiles": "CCO"})
+
+    assert block  # non-empty molblock
+    assert "V2000" in block  # standard SDF/MolBlock marker
+    assert "3D" in block  # RDKit tags embedded conformers as 3D
+    # Ethanol gains explicit hydrogens before embedding: C2H6O = 9 atoms.
+    counts_line = block.splitlines()[3]
+    assert int(counts_line[:3]) == 9
 
 
 def test_report_cli_renders_html_from_isolated_run(isolated_runs, monkeypatch):

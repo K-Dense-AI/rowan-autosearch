@@ -357,6 +357,43 @@ def test_score_batch_docking_maps_scores_and_invalid_smiles(monkeypatch):
     assert results[1]["metric_path_used"] == "scores.CCO"
 
 
+def test_score_batch_docking_short_circuits_when_all_smiles_invalid(monkeypatch):
+    def fail(*args, **kwargs):
+        raise AssertionError("Rowan should not be called when nothing is valid")
+
+    monkeypatch.setitem(sys.modules, "rowan", types.SimpleNamespace(submit_batch_docking_workflow=fail))
+    monkeypatch.setattr(score, "local_descriptors", lambda smiles: {})
+
+    results = score.score_batch_docking(
+        [{"smiles": "bad"}], base_config(workflow_type="batch_docking"), 1
+    )
+
+    assert len(results) == 1
+    assert results[0]["score"] is None
+    assert results[0]["error"] == "RDKit failed to parse SMILES"
+
+
+def test_score_batch_docking_propagates_submit_failure_to_each_candidate(monkeypatch):
+    def boom(smiles_list, name, **params):
+        raise RuntimeError("docking service down")
+
+    monkeypatch.setitem(
+        sys.modules, "rowan",
+        types.SimpleNamespace(submit_batch_docking_workflow=boom),
+    )
+    monkeypatch.setattr(score, "local_descriptors", lambda smiles: {"mw": 46.0})
+
+    results = score.score_batch_docking(
+        [{"smiles": "CCO"}, {"smiles": "CCN"}],
+        base_config(workflow_type="batch_docking", primary_metric="docking_score"),
+        2,
+    )
+
+    assert [r["score"] for r in results] == [None, None]
+    assert all("docking service down" in r["error"] for r in results)
+    assert all("traceback" in r for r in results)
+
+
 def test_score_cli_dry_run_validates_candidates_without_api_key(isolated_runs, monkeypatch):
     monkeypatch.delenv("ROWAN_API_KEY", raising=False)
     state.save_config("demo", base_config())
@@ -500,3 +537,65 @@ def test_score_cli_requires_api_key_outside_dry_run(isolated_runs, monkeypatch):
 
     assert result.exit_code != 0
     assert "ROWAN_API_KEY not set" in result.output
+
+
+def test_score_cli_rejects_empty_smiles(isolated_runs):
+    state.save_config("demo", base_config())
+
+    result = CliRunner().invoke(
+        score.cli,
+        ["--run", "demo", "--rationale", "oops", "--candidate", "|CC|empty smiles"],
+    )
+
+    assert result.exit_code != 0
+    assert "Empty SMILES" in result.output
+
+
+def test_score_cli_refuses_decision_before_any_iteration(isolated_runs):
+    state.save_config("demo", base_config())
+
+    result = CliRunner().invoke(
+        score.cli,
+        ["--run", "demo", "--rationale", "converged already?", "--decision", "converged"],
+    )
+
+    assert result.exit_code != 0
+    assert "Cannot record a decision before any iterations exist" in result.output
+    assert state.list_iterations("demo") == []
+
+
+def test_score_cli_dry_run_without_candidates_is_a_noop(isolated_runs):
+    state.save_config("demo", base_config())
+
+    result = CliRunner().invoke(
+        score.cli,
+        ["--run", "demo", "--rationale", "nothing yet", "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "no candidates to score" in result.output
+    assert state.list_iterations("demo") == []
+
+
+def test_score_cli_routes_batch_docking_workflow(isolated_runs, monkeypatch):
+    state.save_config("demo", base_config(workflow_type="batch_docking", primary_metric="docking_score"))
+    monkeypatch.setenv("ROWAN_API_KEY", "test-key")
+    monkeypatch.setattr(score, "rebuild_report", lambda run_id: state.run_dir(run_id) / "report.html")
+
+    def fake_batch(candidates, cfg, iter_n):
+        return [
+            {**candidates[0], "score": -9.3, "metrics": {"docking_score": -9.3},
+             "satisfies_constraints": True, "constraint_failures": []},
+        ]
+
+    monkeypatch.setattr(score, "score_batch_docking", fake_batch)
+
+    result = CliRunner().invoke(
+        score.cli,
+        ["--run", "demo", "--rationale", "Dock one ligand", "--candidate", "CCO||dock"],
+    )
+
+    assert result.exit_code == 0, result.output
+    iteration = state.load_iter("demo", 1)
+    assert iteration["iteration_best"] == {"smiles": "CCO", "score": -9.3}
+    assert "docking_score=-9.300" in result.output
