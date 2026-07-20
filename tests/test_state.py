@@ -270,6 +270,29 @@ def test_all_candidates_flattens_every_iteration_and_tags_origin(isolated_runs):
     assert [c["iter"] for c in cands] == [1, 2, 2]
 
 
+def test_reserve_iter_allocates_unique_numbers_and_persists_valid_json(
+    isolated_runs,
+):
+    first = state.reserve_iter("demo", {"status": "in_progress", "candidates": []})
+    second = state.reserve_iter("demo", {"status": "in_progress", "candidates": []})
+
+    assert (first, second) == (1, 2)
+    assert state.load_iter("demo", 1)["iter"] == 1
+    assert state.load_iter("demo", 2)["iter"] == 2
+    assert not list((isolated_runs / "demo" / "iterations").glob("*.reserve"))
+
+
+def test_atomic_save_preserves_existing_iteration_on_serialization_failure(
+    isolated_runs,
+):
+    state.save_iter("demo", 1, {"iter": 1, "status": "complete"})
+
+    with pytest.raises(TypeError):
+        state.save_iter("demo", 1, {"iter": 1, "not_json": {object()}})
+
+    assert state.load_iter("demo", 1) == {"iter": 1, "status": "complete"}
+
+
 def test_best_so_far_returns_none_when_no_candidate_qualifies(isolated_runs):
     state.save_config("demo", {
         "run_id": "demo",

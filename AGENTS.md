@@ -50,8 +50,9 @@ Each iteration:
      --candidate "<SMILES>|<PARENT>|<NOTE>" \
      ...
    ```
-   This submits to Rowan in parallel, waits for results, parses the metric,
-   checks constraints locally via RDKit, and writes the iteration JSON.
+   This canonical-deduplicates and checks constraints locally before Rowan,
+   atomically opens the iteration, checkpoints workflow UUIDs, submits in
+   parallel, waits for results, parses the metric, and checkpoints each result.
 6. **Rebuild the report.**
    ```
    uv run rowan-report --run <run_id>
@@ -72,7 +73,9 @@ right path, edit `runs/<run_id>/config.json` to set `metric_path` to the
 correct dot-path (e.g. `"solubility.logS_25C"`).
 
 A failed metric extraction shows up as `score: null` plus an `error` field
-pointing to the raw payload. Fix the path and rescore — don't keep guessing.
+pointing to the raw payload. Fix the path, then run `rowan-score --run
+<run_id> --rationale "metric path corrected" --resume` so the saved Rowan
+workflow is retrieved instead of submitted again.
 
 ## Proposing good candidates
 
@@ -137,11 +140,13 @@ zero candidates: just `--rationale` describing what you found.
 
 - **Invalid SMILES** show up as `score: null` with `error: RDKit failed to
   parse SMILES`. Check parens and ring closures.
-- **All candidates fail constraints.** Loosen the chemical move or check that
-  the constraint values in config.json match the project goal.
-- **Rowan rate limits / failures.** Re-run `rowan-score` with the same
-  candidates; failed ones will resubmit. (Successful ones will create
-  duplicates in a new iteration — better to manually drop the failed
-  candidates from the prior iteration JSON if you re-score.)
-- **Don't mutate prior iteration JSONs** except to fix `decision` or to drop
-  a duplicate. Append-only keeps the genealogy plot honest.
+- **All candidates fail constraints.** They are logged as skipped without
+  spending credits. Loosen the chemical move or check that the constraint
+  values in config.json match the project goal. Only use
+  `--score-constraint-failures` when scoring them is intentional.
+- **Rowan rate limits / failures.** Run `rowan-score --run <run_id>
+  --rationale "retry after Rowan failure" --resume`. UUID-backed jobs are
+  retrieved and candidates that never reached Rowan are submitted.
+- **Don't mutate prior iteration JSONs** except to fix `decision`. Incomplete
+  iterations are checkpointed and updated automatically by `--resume`;
+  completed search history remains append-only.

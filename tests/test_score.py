@@ -158,6 +158,49 @@ def test_check_constraints_skips_rules_with_missing_descriptors():
     assert failed == []
 
 
+def test_score_candidate_does_not_submit_when_constraints_fail(monkeypatch):
+    monkeypatch.setattr(score, "local_descriptors", lambda smiles: {"mw": 301.0})
+
+    def fail_submit(*args, **kwargs):
+        raise AssertionError("constraint-failing candidate must not reach Rowan")
+
+    monkeypatch.setattr(score, "submit_one", fail_submit)
+
+    result = score.score_candidate(
+        {"smiles": "CCO", "parent_smiles": "", "design_note": "too heavy"},
+        base_config(constraints={"mw_max": 300}),
+        1,
+    )
+
+    assert result["status"] == "skipped"
+    assert result["skip_reason"] == "failed local constraints"
+    assert result["score"] is None
+
+
+def test_score_candidate_can_explicitly_score_constraint_failure(monkeypatch):
+    monkeypatch.setattr(score, "local_descriptors", lambda smiles: {"mw": 301.0})
+    monkeypatch.setattr(
+        score,
+        "submit_one",
+        lambda smiles, cfg, name: {
+            "uuid": "wf-override",
+            "object_data": {"logS": -1.0},
+            "workflow_type": "solubility",
+        },
+    )
+
+    result = score.score_candidate(
+        {"smiles": "CCO"},
+        base_config(constraints={"mw_max": 300}),
+        1,
+        score_constraint_failures=True,
+    )
+
+    assert result["status"] == "complete"
+    assert result["satisfies_constraints"] is False
+    assert result["score"] == -1.0
+
+
 def test_local_descriptors_returns_empty_dict_for_invalid_smiles():
     assert score.local_descriptors("not a smiles") == {}
 
@@ -303,6 +346,46 @@ def test_submit_one_dispatches_to_named_workflow_for_non_solubility(monkeypatch)
     assert captured == {"initial_smiles": "CCO", "name": "j"}
 
 
+def test_submit_one_retrieves_saved_workflow_uuid_without_resubmitting(monkeypatch):
+    captured = {}
+
+    class FakeWorkflow:
+        uuid = "saved-123"
+
+        def result(self, wait, poll_interval):
+            return types.SimpleNamespace(data={"logS": -0.5})
+
+    def fail_submit(*args, **kwargs):
+        raise AssertionError("resume must not submit a new workflow")
+
+    def retrieve_workflow(uuid):
+        captured["retrieved"] = uuid
+        return FakeWorkflow()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "rowan",
+        types.SimpleNamespace(
+            submit_solubility_workflow=fail_submit,
+            retrieve_workflow=retrieve_workflow,
+        ),
+    )
+
+    submitted = []
+    result = score.submit_one(
+        "CCO",
+        base_config(),
+        "ignored-name",
+        workflow_uuid="saved-123",
+        on_submitted=submitted.append,
+    )
+
+    assert captured == {"retrieved": "saved-123"}
+    assert submitted == ["saved-123"]
+    assert result["uuid"] == "saved-123"
+    assert result["object_data"] == {"logS": -0.5}
+
+
 def test_submit_one_raises_for_workflow_without_a_submitter(monkeypatch):
     monkeypatch.setitem(sys.modules, "rowan", types.SimpleNamespace())
 
@@ -371,6 +454,30 @@ def test_score_batch_docking_short_circuits_when_all_smiles_invalid(monkeypatch)
     assert len(results) == 1
     assert results[0]["score"] is None
     assert results[0]["error"] == "RDKit failed to parse SMILES"
+
+
+def test_score_batch_docking_does_not_submit_constraint_failures(monkeypatch):
+    def fail(*args, **kwargs):
+        raise AssertionError("constraint-failing batch must not reach Rowan")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "rowan",
+        types.SimpleNamespace(submit_batch_docking_workflow=fail),
+    )
+
+    results = score.score_batch_docking(
+        [{"smiles": "CCO"}],
+        base_config(
+            workflow_type="batch_docking",
+            primary_metric="docking_score",
+            constraints={"mw_max": 10},
+        ),
+        1,
+    )
+
+    assert results[0]["status"] == "skipped"
+    assert results[0]["skip_reason"] == "failed local constraints"
 
 
 def test_score_batch_docking_propagates_submit_failure_to_each_candidate(monkeypatch):
@@ -494,12 +601,13 @@ def test_score_cli_writes_iteration_and_best_so_far(isolated_runs, monkeypatch):
     monkeypatch.setattr(
         score,
         "score_candidate",
-        lambda cand, cfg, iter_n: {
+        lambda cand, cfg, iter_n, **kwargs: {
             **cand,
             "score": 2.0 if cand["smiles"] == "CCO" else 1.0,
             "metrics": {"logS": 2.0 if cand["smiles"] == "CCO" else 1.0},
             "satisfies_constraints": True,
             "constraint_failures": [],
+            "status": "complete",
         },
     )
 
@@ -582,10 +690,11 @@ def test_score_cli_routes_batch_docking_workflow(isolated_runs, monkeypatch):
     monkeypatch.setenv("ROWAN_API_KEY", "test-key")
     monkeypatch.setattr(score, "rebuild_report", lambda run_id: state.run_dir(run_id) / "report.html")
 
-    def fake_batch(candidates, cfg, iter_n):
+    def fake_batch(candidates, cfg, iter_n, **kwargs):
         return [
             {**candidates[0], "score": -9.3, "metrics": {"docking_score": -9.3},
-             "satisfies_constraints": True, "constraint_failures": []},
+             "satisfies_constraints": True, "constraint_failures": [],
+             "status": "complete"},
         ]
 
     monkeypatch.setattr(score, "score_batch_docking", fake_batch)
@@ -599,3 +708,119 @@ def test_score_cli_routes_batch_docking_workflow(isolated_runs, monkeypatch):
     iteration = state.load_iter("demo", 1)
     assert iteration["iteration_best"] == {"smiles": "CCO", "score": -9.3}
     assert "docking_score=-9.300" in result.output
+
+
+def test_preflight_gates_history_constraints_and_intra_batch_duplicates(
+    isolated_runs,
+):
+    state.save_config("demo", base_config(constraints={"mw_max": 100}))
+    state.save_iter("demo", 1, {
+        "iter": 1,
+        "candidates": [
+            {
+                "smiles": "CCO",
+                "score": -1.0,
+                "workflow_uuid": "wf-prior",
+                "satisfies_constraints": True,
+            }
+        ],
+    })
+
+    records, submit_indexes = score.preflight_candidates(
+        "demo",
+        [
+            {"smiles": "OCC", "parent_smiles": "", "design_note": "canonical duplicate"},
+            {"smiles": "CCCCCCCCCC", "parent_smiles": "", "design_note": "too heavy"},
+            {"smiles": "CCN", "parent_smiles": "", "design_note": "eligible"},
+            {"smiles": "NCC", "parent_smiles": "", "design_note": "batch duplicate"},
+        ],
+        state.load_config("demo"),
+    )
+
+    assert submit_indexes == [2]
+    assert records[0]["skip_reason"] == "already submitted to Rowan"
+    assert records[1]["skip_reason"] == "failed local constraints"
+    assert records[3]["skip_reason"] == "duplicate candidate in this batch"
+
+
+def test_score_cli_checkpoints_uuid_and_resumes_without_resubmitting(
+    isolated_runs,
+    monkeypatch,
+):
+    state.save_config("demo", base_config())
+    monkeypatch.setenv("ROWAN_API_KEY", "test-key")
+    monkeypatch.setattr(
+        score,
+        "rebuild_report",
+        lambda run_id: state.run_dir(run_id) / "report.html",
+    )
+    calls = []
+
+    def fake_submit(smiles, cfg, name, *, workflow_uuid=None, on_submitted=None):
+        calls.append(workflow_uuid)
+        uuid = workflow_uuid or "wf-paid"
+        if on_submitted:
+            on_submitted(uuid)
+        if workflow_uuid is None:
+            raise score.RowanWorkflowError("temporary timeout", uuid)
+        return {
+            "uuid": uuid,
+            "object_data": {"solubilities": {"O": {"solubilities": [-1.25]}}},
+            "workflow_type": "solubility",
+        }
+
+    monkeypatch.setattr(score, "submit_one", fake_submit)
+    runner = CliRunner()
+    first = runner.invoke(
+        score.cli,
+        [
+            "--run", "demo",
+            "--rationale", "Initial attempt",
+            "--candidate", "CCO||baseline",
+        ],
+    )
+
+    assert first.exit_code == 0, first.output
+    partial = state.load_iter("demo", 1)
+    assert partial["status"] == "incomplete"
+    assert partial["candidates"][0]["workflow_uuid"] == "wf-paid"
+    assert partial["candidates"][0]["score"] is None
+
+    resumed = runner.invoke(
+        score.cli,
+        [
+            "--run", "demo",
+            "--rationale", "Resume paid workflow",
+            "--resume",
+        ],
+    )
+
+    assert resumed.exit_code == 0, resumed.output
+    completed = state.load_iter("demo", 1)
+    assert completed["status"] == "complete"
+    assert completed["candidates"][0]["score"] == -1.25
+    assert completed["iteration_best"] == {"smiles": "CCO", "score": -1.25}
+    assert calls == [None, "wf-paid"]
+
+
+def test_score_cli_enforces_max_iterations(isolated_runs, monkeypatch):
+    state.save_config("demo", base_config(max_iterations=1))
+    state.save_iter("demo", 1, {
+        "iter": 1,
+        "status": "complete",
+        "candidates": [],
+    })
+    monkeypatch.setenv("ROWAN_API_KEY", "test-key")
+
+    result = CliRunner().invoke(
+        score.cli,
+        [
+            "--run", "demo",
+            "--rationale", "Over budget",
+            "--candidate", "CCN||new",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "reached max_iterations=1" in result.output
+    assert state.list_iterations("demo") == [1]

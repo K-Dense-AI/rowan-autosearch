@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,10 +41,29 @@ def load_config(run_id: str) -> dict[str, Any]:
     return json.loads(p.read_text())
 
 
+def _atomic_write_json(p: Path, data: dict[str, Any]) -> None:
+    """Write JSON with an atomic replace so readers never see partial state."""
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=p.parent,
+        prefix=f".{p.name}.",
+        suffix=".tmp",
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, p)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def save_config(run_id: str, cfg: dict[str, Any]) -> None:
     p = run_dir(run_id) / "config.json"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(cfg, indent=2))
+    _atomic_write_json(p, cfg)
 
 
 def list_iterations(run_id: str) -> list[int]:
@@ -63,9 +83,41 @@ def load_iter(run_id: str, n: int) -> dict[str, Any]:
 
 
 def save_iter(run_id: str, n: int, data: dict[str, Any]) -> None:
-    p = iter_path(run_id, n)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, indent=2))
+    _atomic_write_json(iter_path(run_id, n), data)
+
+
+def reserve_iter(run_id: str, data: dict[str, Any]) -> int:
+    """Atomically reserve and create the next iteration number.
+
+    Sidecar reservation files prevent concurrent score processes from choosing
+    the same number. A process that dies while reserving may leave a harmless
+    gap; iteration consumers already support non-contiguous numbering.
+    """
+    iterations_dir = run_dir(run_id) / "iterations"
+    iterations_dir.mkdir(parents=True, exist_ok=True)
+    existing = list_iterations(run_id)
+    n = (max(existing) + 1) if existing else 1
+
+    while True:
+        reservation = iterations_dir / f".{n:04d}.reserve"
+        try:
+            fd = os.open(reservation, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            n += 1
+            continue
+
+        os.close(fd)
+        try:
+            target = iter_path(run_id, n)
+            if target.exists():
+                n += 1
+                continue
+            record = dict(data)
+            record["iter"] = n
+            _atomic_write_json(target, record)
+            return n
+        finally:
+            reservation.unlink(missing_ok=True)
 
 
 def parse_jsonish(value: str) -> Any:

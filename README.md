@@ -153,8 +153,9 @@ combined score for full transparency.
 ### Local RDKit constraints (drug-likeness gates)
 
 Constraints are checked *before* spending Rowan credits. A failing candidate
-is still scored and logged for visibility, but it does not count toward
-best-so-far.
+is logged as skipped and is not submitted. Use `--score-constraint-failures`
+only when intentionally paying to characterize an out-of-bounds candidate; it
+still does not count toward best-so-far.
 
 ```bash
 --constraint mw_max=350      # molecular weight maximum (Da)
@@ -431,25 +432,33 @@ uv run rowan-score --run <run_id> \
   --candidate "<SMILES>|<PARENT_SMILES>|<DESIGN_NOTE>" \
   [--decision continue|converged|stuck] \
   [--max-workers <n>] \
+  [--resume] [--force-rescore] \
+  [--score-constraint-failures] [--allow-over-budget] \
   [--dry-run]
 ```
 
 For each candidate, `rowan-score`:
 
-1. Parses SMILES with RDKit.
+1. Parses and canonicalizes SMILES with RDKit, rejecting duplicates already
+   submitted in the run or repeated within the batch.
 2. Computes local descriptors (MW, logP, TPSA, HBD, HBA, rotatable bonds,
    heavy atoms, rings).
-3. Checks local constraints.
-4. Submits the configured Rowan workflow (in parallel, or as one batch for
-   `batch_docking`).
-5. Saves the **full** Rowan `object_data`.
-6. Extracts the primary metric — or, if a composite objective is configured,
+3. Checks local constraints and skips failures before Rowan submission.
+4. Atomically creates an in-progress iteration record.
+5. Submits the configured Rowan workflow (in parallel, or as one batch for
+   `batch_docking`) and checkpoints each workflow UUID immediately.
+6. Saves the **full** Rowan `object_data`.
+7. Extracts the primary metric — or, if a composite objective is configured,
    computes the weighted score and saves per-term contributions.
-7. Appends a new `iterations/NNNN.json`.
+8. Checkpoints each result and marks the iteration complete.
 
 `PARENT_SMILES` may be empty (`SMILES||note`) for the baseline.
 
-`--dry-run` validates formatting without calling Rowan.
+`--dry-run` runs the complete local preflight without calling Rowan or writing
+an iteration. If scoring is interrupted, rerun with `--resume`; saved workflow
+UUIDs are retrieved from Rowan instead of resubmitted. `--force-rescore`
+explicitly overrides historical dedup, and `--allow-over-budget` explicitly
+overrides `max_iterations`.
 
 When no `--candidate` is supplied, `rowan-score` does not call Rowan. Use
 `--decision converged|stuck` to update the latest iteration's decision, or omit
@@ -654,8 +663,8 @@ The top-level README is a feature overview. For the full handbook, see
   Rowan on its own.
 - Reports center on one scalar `score`. Composite objectives are recorded
   per term in JSON, but plots show only the combined score for now.
-- `candidates_per_iter` and `max_iterations` are guidance for the agent; the
-  CLI does not hard-enforce either.
+- `candidates_per_iter` is guidance for the agent; `max_iterations` is enforced
+  by `rowan-score` unless `--allow-over-budget` is explicitly supplied.
 - Workflows requiring non-SMILES inputs (proteins, pockets, spin states,
   reaction endpoints) work but are not validated against current Rowan SDK
   signatures before submission — make sure `workflow_params` matches the
