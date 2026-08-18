@@ -25,6 +25,8 @@ Joint work between [K-Dense](https://www.k-dense.ai) and
 
 > **Stay up to date:** Follow K-Dense on [X](https://x.com/k_dense_ai), [LinkedIn](https://www.linkedin.com/company/k-dense-inc), and [YouTube](https://www.youtube.com/@K-Dense-Inc) for release announcements, molecular optimization walkthroughs, and new Rowan workflow examples you can run with your own AI agent.
 
+> 🎬 **New to running K-Dense skills with your agent?** [Getting Started with Scientific Agent Skills](https://youtu.be/ZxbnDaD_FVg) covers the agent setup this harness assumes.
+
 ---
 
 ## Who This Is For
